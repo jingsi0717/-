@@ -1,0 +1,46 @@
+name: Publish offline roadbook
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore packaged offline images
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          for source in Path('encoded-assets').rglob('*.b64'):
+              target = Path('source/public') / source.relative_to('encoded-assets').with_suffix('')
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(base64.b64decode(source.read_text(), validate=True))
+          PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build static roadbook
+        working-directory: source
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: source/dist-pages
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
