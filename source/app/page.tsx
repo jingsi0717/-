@@ -292,7 +292,7 @@ export default function Roadbook() {
       <header className="app-header">
         <button className="wordmark" onClick={() => setTab('today')}>
           <span>2026 · 青海 · 甘肃</span>
-          <strong>独自上路</strong>
+          <strong>自驾青甘</strong>
         </button>
         <span className="offline">
           <ShieldCheck />
