@@ -1,0 +1,11 @@
+{
+  "name": "向西，然后向东｜青甘离线路书",
+  "short_name": "青甘路书",
+  "description": "2026 青甘单人自驾离线路书",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#24322c",
+  "icons": [{"src": "./favicon.svg", "sizes": "any", "type": "image/svg+xml"}]
+}
