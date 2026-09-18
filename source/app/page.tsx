@@ -170,7 +170,10 @@ export default function Roadbook() {
     setState(load());
     setReady(true);
     if (location.hostname !== 'localhost' && 'serviceWorker' in navigator)
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      navigator.serviceWorker
+        .register('./sw.js', { updateViaCache: 'none' })
+        .then((registration) => registration.update())
+        .catch(() => {});
   }, []);
   useEffect(() => {
     if (ready)
