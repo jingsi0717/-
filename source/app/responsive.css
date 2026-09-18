@@ -9,6 +9,11 @@ input,select,textarea{min-width:0;max-width:100%}
 .trip-map{width:100%;height:auto;aspect-ratio:3/2}
 .trip-map>img,.trip-map>svg{height:100%;width:100%}
 .bottom-nav{width:min(760px,100vw)}
+@media(max-width:760px){
+  .app{overflow:visible;padding-bottom:calc(98px + env(safe-area-inset-bottom,0px))}
+  .bottom-nav{position:fixed;inset:auto 0 0;left:0;right:0;bottom:0;width:100%;max-width:none;margin:0;transform:none;border-radius:0;z-index:30;padding:9px 12px calc(10px + env(safe-area-inset-bottom,0px))}
+  .bottom-nav button{min-height:49px;touch-action:manipulation}
+}
 .todo-sheet{width:min(760px,100vw);max-height:90dvh;padding-bottom:max(20px,env(safe-area-inset-bottom))}
 .state-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 .form-pair{grid-template-columns:repeat(2,minmax(0,1fr))}
