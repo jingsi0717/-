@@ -39,7 +39,27 @@ type Todo = {
   node?: string;
   deadline?: string;
   note?: string;
+  createdAt?: string;
+  completedAt?: string;
+  source?: 'preset' | 'manual' | 'decision';
 };
+type TripEvent = {
+  id: string;
+  day: number;
+  at: string;
+  kind: 'decision' | 'node' | 'todo' | 'state';
+  text: string;
+};
+type Confirmation = {
+  day: number;
+  at: string;
+  node: number;
+  status: NodeStatus;
+  decision: string;
+  state: DayState;
+  pickup: Saved['pickup'];
+};
+type UndoState = { statuses: Record<string, NodeStatus>; todos: Todo[]; events: TripEvent[]; confirmed: Record<number, Confirmation> };
 type Journal = {
   weather?: string;
   route?: string;
@@ -65,6 +85,11 @@ type Saved = {
   todos: Todo[];
   dayState: Record<number, DayState>;
   journal: Record<number, Journal>;
+  confirmed?: Record<number, Confirmation>;
+  events?: TripEvent[];
+  undo?: UndoState | null;
+  manualDay?: number | null;
+  finished?: boolean;
 };
 const makeDay = (): DayState => ({
   time: '',
@@ -78,11 +103,25 @@ const makeDay = (): DayState => ({
 });
 const defaults: Saved = {
   pickup: 'unknown',
-  statuses: { '2-0': 'completed', '2-1': 'current' },
+  statuses: {},
   todos: initialTodos,
   dayState: {},
   journal: {},
+  confirmed: {},
+  events: [],
+  undo: null,
+  manualDay: null,
+  finished: false,
 };
+function calendarDay(now = new Date()) {
+  const date = Number(`${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}`);
+  if (date < 20260927) return 1;
+  if (date > 20261003) return 7;
+  return date <= 20260930 ? date - 20260926 : date - 20261001 + 5;
+}
+function logEvent(day: number, kind: TripEvent['kind'], text: string): TripEvent {
+  return { id: crypto.randomUUID(), day, at: new Date().toISOString(), kind, text };
+}
 const dayImages: Record<number, string> = {
   1: './images/danxia.jpg',
   2: './images/danxia.jpg',
@@ -91,6 +130,15 @@ const dayImages: Record<number, string> = {
   5: './images/emerald-lake.jpg',
   6: './images/chaka.jpg',
   7: './images/qinghai-lake.jpg',
+};
+const journalThemes: Record<number, { name: string; subtitle: string; motif: string; accent: string; pale: string }> = {
+  1: { name: '启程前夜', subtitle: '把路交给明天', motif: '01 / ARRIVAL', accent: '#536774', pale: '#e7ecec' },
+  2: { name: '丹霞向西', subtitle: '从张掖驶向敦煌', motif: '02 / WESTBOUND', accent: '#bb6240', pale: '#f3e7dc' },
+  3: { name: '沙州一日', subtitle: '石窟与鸣沙山', motif: '03 / DUNHUANG', accent: '#a6753f', pale: '#f3eadb' },
+  4: { name: '穿过荒原', subtitle: '向冷湖和雅丹去', motif: '04 / WILDERNESS', accent: '#5c6663', pale: '#e8e9e3' },
+  5: { name: '公路与水', subtitle: '雅丹之后是 G315', motif: '05 / THE ROAD', accent: '#477c84', pale: '#e3eef0' },
+  6: { name: '盐湖来信', subtitle: '从柴达木到茶卡', motif: '06 / SALT LAKE', accent: '#5c8b92', pale: '#e7f0ee' },
+  7: { name: '湖边收尾', subtitle: '望一眼青海湖，再回家', motif: '07 / HOMECOMING', accent: '#557b90', pale: '#e5edf1' },
 };
 const statusText: Record<NodeStatus, string> = {
   pending: '未开始',
@@ -137,17 +185,19 @@ function compress(file: File): Promise<string> {
 
 export default function Roadbook() {
   const [tab, setTab] = useState<Tab>('today'),
-    [day, setDay] = useState(2),
+    [day, setDay] = useState(1),
     [state, setState] = useState<Saved>(defaults),
     [ready, setReady] = useState(false),
     [mapPlaying, setMapPlaying] = useState(true),
     [openInfo, setOpenInfo] = useState('timeline'),
     [todoOpen, setTodoOpen] = useState(false),
+    [todoFilter, setTodoFilter] = useState<'pre' | 'trip' | 'done'>('pre'),
+    [draftStatus, setDraftStatus] = useState<NodeStatus>('pending'),
+    [printMode, setPrintMode] = useState<'day' | 'all' | null>(null),
     [todoDraft, setTodoDraft] = useState({
       text: '',
       group: '行程',
       day: '2',
-      node: '',
       deadline: '',
       note: '',
     });
@@ -167,7 +217,10 @@ export default function Roadbook() {
         history.replaceState({}, '', location.pathname);
       }
     }
-    setState(load());
+    const saved = load();
+    const automaticDay = calendarDay();
+    setState({ ...saved, finished: saved.finished || Date.now() > new Date(2026, 9, 3, 23, 59, 59).getTime() });
+    setDay(saved.manualDay || automaticDay);
     setReady(true);
     if (location.hostname !== 'localhost' && 'serviceWorker' in navigator)
       navigator.serviceWorker
@@ -186,6 +239,8 @@ export default function Roadbook() {
     selected = Math.min(ds.selected, d.timeline.length - 1),
     node = d.timeline[selected],
     nodeStatus = state.statuses[key(day, selected)] || 'pending';
+  useEffect(() => setDraftStatus(nodeStatus), [day, selected, nodeStatus]);
+  const changeDay = (next: number) => { setDay(next); setState(s => ({ ...s, manualDay: next })); };
   const updateDay = (patch: Partial<DayState>) =>
     setState((s) => ({
       ...s,
@@ -212,8 +267,30 @@ export default function Roadbook() {
           .filter((k) => k.startsWith(day + '-') && statuses[k] === 'current')
           .forEach((k) => (statuses[k] = 'pending'));
       statuses[key(day, selected)] = next;
-      return { ...s, statuses };
+      return { ...s, statuses, events: [...(s.events || []), logEvent(day, 'node', `${d.timeline[selected].title}：${statusText[next]}`)] };
     });
+  const confirmDecision = () => setState(s => {
+    const previous = { statuses: { ...s.statuses }, todos: s.todos.map(x => ({ ...x })), events: [...(s.events || [])], confirmed: { ...(s.confirmed || {}) } };
+    const statuses = { ...s.statuses };
+    if (draftStatus === 'current') Object.keys(statuses).filter(k => k.startsWith(day + '-') && statuses[k] === 'current').forEach(k => statuses[k] = 'pending');
+    statuses[key(day, selected)] = draftStatus;
+    const now = new Date().toISOString();
+    const confirmation: Confirmation = { day, at: now, node: selected, status: draftStatus, decision: decision.title, state: { ...ds }, pickup: s.pickup };
+    const added = [logEvent(day, 'decision', `确认：${decision.title}；${d.timeline[selected].title} ${statusText[draftStatus]}`)];
+    if (ds.note.trim()) added.push(logEvent(day, 'state', `备注：${ds.note.trim()}`));
+    const todos = s.todos.map(t => ({ ...t }));
+    const decisionText = decision.title;
+    const action = decision.level === 'danger' ? decisionText : day === 2 && decision.level === 'warn' ? '确认演出入场时间并直接前往敦煌' : day === 4 && decision.level === 'warn' ? '确认冷湖补给与水上雅丹景区外住宿' : day === 7 && decision.level === 'warn' ? '直接前往西宁机场' : '';
+    if (action && !todos.some(t => t.source === 'decision' && t.day === day && t.text === action)) todos.push({ id: crypto.randomUUID(), text: action, group: '行程', day, done: false, source: 'decision', createdAt: now });
+    if (/跳过黑独山|取消翡翠湖|取消全部停留/.test(decisionText)) {
+      const target = decisionText.includes('黑独山') ? '黑独山' : decisionText.includes('翡翠湖') ? '翡翠湖' : '日月山';
+      const index = d.timeline.findIndex(x => x.title.includes(target));
+      if (index >= 0) statuses[key(day, index)] = 'skipped';
+      added.push(logEvent(day, 'decision', `${target}已按建议跳过`));
+    }
+    return { ...s, statuses, todos, confirmed: { ...(s.confirmed || {}), [day]: confirmation }, events: [...(s.events || []), ...added], undo: previous };
+  });
+  const undoDecision = () => setState(s => s.undo ? ({ ...s, ...s.undo, undo: null }) : s);
   const completed = d.timeline.filter(
     (_, i) => state.statuses[key(day, i)] === 'completed',
   ).length;
@@ -229,10 +306,23 @@ export default function Roadbook() {
       ),
   );
   const next = d.timeline[nextIndex < 0 ? d.timeline.length - 1 : nextIndex];
+  const currentConfirmation = state.confirmed?.[day];
+  const effectiveDecision = currentConfirmation?.decision;
+  const dayEvents = (state.events || []).filter(x => x.day === day);
+  const printJournal = (mode: 'day' | 'all') => {
+    setPrintMode(mode);
+    setTimeout(() => window.print(), 100);
+  };
+  useEffect(() => {
+    const clear = () => setPrintMode(null);
+    window.addEventListener('afterprint', clear);
+    return () => window.removeEventListener('afterprint', clear);
+  }, []);
   const saveTodo = () => {
     if (!todoDraft.text.trim()) return;
     setState((s) => ({
       ...s,
+      events: [...(s.events || []), logEvent(Number(todoDraft.day) || day, 'todo', `新增待办：${todoDraft.text.trim()}`)],
       todos: [
         ...s.todos,
         {
@@ -241,9 +331,10 @@ export default function Roadbook() {
           group: todoDraft.group,
           done: false,
           day: Number(todoDraft.day),
-          node: todoDraft.node,
           deadline: todoDraft.deadline,
           note: todoDraft.note,
+          createdAt: new Date().toISOString(),
+          source: 'manual',
         },
       ],
     }));
@@ -252,7 +343,6 @@ export default function Roadbook() {
       text: '',
       group: '行程',
       day: String(day),
-      node: '',
       deadline: '',
       note: '',
     });
@@ -279,7 +369,7 @@ export default function Roadbook() {
       ...s,
       journal: {
         ...s.journal,
-        [id]: { photos: [], ...(s.journal[id] || {}), ...patch },
+        [id]: { ...(s.journal[id] || { photos: [] }), ...patch },
       },
     }));
   const addPhotos = async (id: number, files: FileList | null) => {
@@ -302,8 +392,10 @@ export default function Roadbook() {
           离线可用
         </span>
       </header>
+      {printMode && <section className="print-document">{(printMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
       {tab === 'today' && (
         <section className="view">
+          {state.finished && <div className="trip-finished"><strong>旅程已结束</strong><span>可以在旅记中回看和导出七天记录。</span><button onClick={() => setTab('journal')}>查看旅记</button></div>}
           <div className="view-title">
             <div>
               <span>
@@ -314,7 +406,7 @@ export default function Roadbook() {
             <select
               aria-label="切换当前日期"
               value={day}
-              onChange={(e) => setDay(Number(e.target.value))}
+              onChange={(e) => changeDay(Number(e.target.value))}
             >
               {days.map((x) => (
                 <option key={x.id} value={x.id}>
@@ -325,8 +417,8 @@ export default function Roadbook() {
           </div>
           <div className="metrics">
             <div>
-              <b>{d.timeline.length}</b>
-              <span>当日节点</span>
+              <b>{completed}/{d.timeline.length}</b>
+              <span>完成节点</span>
             </div>
             <div>
               <b>
@@ -376,16 +468,10 @@ export default function Roadbook() {
             </div>
             <div className="action-buttons">
               <button
-                onClick={() => {
-                  selectNode(
-                    nextIndex < 0 ? d.timeline.length - 1 : nextIndex,
-                    true,
-                  );
-                  setNodeStatus('current');
-                }}
+                onClick={() => selectNode(nextIndex < 0 ? d.timeline.length - 1 : nextIndex, true)}
               >
                 <Play />
-                开始此路段
+                去决策中心
               </button>
               <button
                 onClick={() => navigator.clipboard?.writeText(next.title)}
@@ -405,6 +491,12 @@ export default function Roadbook() {
             setSelected={selectNode}
             status={nodeStatus}
             setStatus={setNodeStatus}
+            draftStatus={draftStatus}
+            setDraftStatus={setDraftStatus}
+            onConfirm={confirmDecision}
+            onUndo={undoDecision}
+            canUndo={!!state.undo}
+            confirmedAt={currentConfirmation?.at}
             decision={decision}
             pickup={state.pickup}
             setPickup={(pickup) => setState((s) => ({ ...s, pickup }))}
@@ -426,7 +518,7 @@ export default function Roadbook() {
               <button
                 key={x.id}
                 className={day === x.id ? 'active' : ''}
-                onClick={() => setDay(x.id)}
+                onClick={() => changeDay(x.id)}
               >
                 D{x.id}
                 <small>{x.date.split(' ')[0]}</small>
@@ -464,7 +556,7 @@ export default function Roadbook() {
               })}
             </div>
           </article>
-          <InfoAccordion d={d} open={openInfo} setOpen={setOpenInfo} />
+          <InfoAccordion d={d} ds={ds} decision={effectiveDecision} statuses={state.statuses} open={openInfo} setOpen={setOpenInfo} />
         </section>
       )}
       {tab === 'todos' && (
@@ -486,13 +578,12 @@ export default function Roadbook() {
             </button>
           </div>
           <div className="todo-filters">
-            <button className="active">全部</button>
-            <button>出发前</button>
-            <button>行程中</button>
-            <button>已完成</button>
+            <button className={todoFilter === 'pre' ? 'active' : ''} onClick={() => setTodoFilter('pre')}>出发前</button>
+            <button className={todoFilter === 'trip' ? 'active' : ''} onClick={() => setTodoFilter('trip')}>行程中</button>
+            <button className={todoFilter === 'done' ? 'active' : ''} onClick={() => setTodoFilter('done')}>已完成（{state.todos.filter(x => x.done).length}）</button>
           </div>
           <div className="todo-list">
-            {state.todos.map((t) => (
+            {state.todos.filter(t => todoFilter === 'done' ? t.done : !t.done && (todoFilter === 'pre' ? (!t.day || t.group === '出发前' || t.group === '预订') : !!t.day && t.group !== '出发前' && t.group !== '预订')).map((t) => (
               <label
                 key={t.id}
                 className={'todo-row ' + (t.done ? 'done' : '')}
@@ -503,9 +594,8 @@ export default function Roadbook() {
                   onChange={() =>
                     setState((s) => ({
                       ...s,
-                      todos: s.todos.map((x) =>
-                        x.id === t.id ? { ...x, done: !x.done } : x,
-                      ),
+                      todos: s.todos.map((x) => x.id === t.id ? { ...x, done: !x.done, completedAt: !x.done ? new Date().toISOString() : undefined } : x),
+                      events: [...(s.events || []), logEvent(t.day || day, 'todo', `${t.done ? '恢复' : '完成'}待办：${t.text}`)],
                     }))
                   }
                 />
@@ -523,6 +613,7 @@ export default function Roadbook() {
                     setState((s) => ({
                       ...s,
                       todos: s.todos.filter((x) => x.id !== t.id),
+                      events: [...(s.events || []), logEvent(t.day || day, 'todo', `删除待办：${t.text}`)],
                     }));
                   }}
                 >
@@ -531,27 +622,6 @@ export default function Roadbook() {
               </label>
             ))}
           </div>
-          <article className="backup">
-            <h3>本机数据</h3>
-            <p>导出或恢复行程状态、待办和旅记。照片会使备份文件变大。</p>
-            <div>
-              <button onClick={exportData}>
-                <Download />
-                导出备份
-              </button>
-              <button onClick={() => importRef.current?.click()}>
-                <FileUp />
-                恢复备份
-              </button>
-              <input
-                ref={importRef}
-                hidden
-                type="file"
-                accept=".json"
-                onChange={importData}
-              />
-            </div>
-          </article>
           {todoOpen && (
             <TodoSheet
               draft={todoDraft}
@@ -574,7 +644,7 @@ export default function Roadbook() {
             <select
               aria-label="切换旅记日期"
               value={day}
-              onChange={(e) => setDay(Number(e.target.value))}
+              onChange={(e) => changeDay(Number(e.target.value))}
             >
               {days.map((x) => (
                 <option key={x.id} value={x.id}>
@@ -589,6 +659,11 @@ export default function Roadbook() {
             setJournal={(patch) => setJournal(day, patch)}
             addPhotos={(files) => addPhotos(day, files)}
           />
+          <h2 className="journal-preview-heading">当日手帐预览 <span>内容和照片会随记录更新</span></h2>
+          <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
+          <SystemJournal d={d} events={dayEvents} ds={ds} hasState={Boolean(state.dayState[day])} statuses={state.statuses} todos={state.todos} />
+          <div className="journal-actions"><button onClick={() => printJournal('day')}><Download />导出当天 PDF</button><button onClick={() => printJournal('all')}><Download />导出全程 PDF</button></div>
+          <article className="backup"><h3>本机数据备份</h3><p>PDF 用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
         </section>
       )}
       <nav className="bottom-nav">
@@ -685,6 +760,12 @@ function DecisionCenterImpl(
     setSelected,
     status,
     setStatus,
+    draftStatus,
+    setDraftStatus,
+    onConfirm,
+    onUndo,
+    canUndo,
+    confirmedAt,
     decision,
     pickup,
     setPickup,
@@ -697,6 +778,12 @@ function DecisionCenterImpl(
     setSelected: (i: number) => void;
     status: NodeStatus;
     setStatus: (x: NodeStatus) => void;
+    draftStatus: NodeStatus;
+    setDraftStatus: (x: NodeStatus) => void;
+    onConfirm: () => void;
+    onUndo: () => void;
+    canUndo: boolean;
+    confirmedAt?: string;
     decision: { level: string; title: string; text: string };
     pickup: string;
     setPickup: (x: 'unknown' | 'early' | 'eight') => void;
@@ -818,8 +905,8 @@ function DecisionCenterImpl(
         ).map((x) => (
           <button
             key={x}
-            className={status === x ? 'active' : ''}
-            onClick={() => setStatus(x)}
+            className={draftStatus === x ? 'active' : ''}
+            onClick={() => setDraftStatus(x)}
           >
             {x === 'pending' && status === 'skipped' ? '恢复' : statusText[x]}
           </button>
@@ -833,10 +920,12 @@ function DecisionCenterImpl(
           placeholder="路况变化、实际停留或临时决定…"
         />
       </label>
-      <button className="confirm">
+      <button className="confirm" onClick={onConfirm}>
         <Check />
         确认并同步
       </button>
+      {confirmedAt && <p className="sync-note">上次确认：{new Date(confirmedAt).toLocaleString('zh-CN')} · 四页已同步</p>}
+      {canUndo && <button className="undo-button" onClick={onUndo}>撤销上次确认</button>}
     </section>
   );
 }
@@ -943,10 +1032,6 @@ function TripMap({
           <Pause />
           暂停
         </button>
-        <button>
-          <Map />
-          图例
-        </button>
       </div>
       <span className="map-disclaimer">
         全程路线常驻 · D{day}路线高亮 · 示意不用于导航
@@ -962,22 +1047,28 @@ function short(s: string) {
 }
 function InfoAccordion({
   d,
+  ds,
+  decision,
+  statuses,
   open,
   setOpen,
 }: {
   d: TripDay;
+  ds: DayState;
+  decision?: string;
+  statuses: Record<string, NodeStatus>;
   open: string;
   setOpen: (x: string) => void;
 }) {
   const items = [
-    ['timeline', '时间、里程、住宿', d.summary + ' 住宿：' + d.stay],
+    ['timeline', '时间、里程、住宿', d.summary + ' 住宿：' + d.stay + (ds.eta ? `；手动预计到达 ${ds.eta}` : '')],
     [
       'priority',
       '优先级与可砍项目',
-      '优先级：' + d.priorities.join(' ＞ ') + '。可砍：' + d.cuts.join('；'),
+      '优先级：' + d.priorities.join(' ＞ ') + '。可砍：' + d.cuts.join('；') + '。已跳过：' + (d.timeline.filter((_, i) => statuses[key(d.id, i)] === 'skipped').map(x => x.title).join('、') || '无'),
     ],
-    ['fuel', '吃饭、加油与休息', d.fuel.join('；') + '。每1.5—2小时休息。'],
-    ['risk', '风险提醒与当天决策', d.decision || '不赶夜路，安全抵达优先。'],
+    ['fuel', '吃饭、加油与休息', d.fuel.join('；') + `。当前油量：${ds.fuel}；体力：${ds.energy}。每1.5—2小时休息。`],
+    ['risk', '风险提醒与当天决策', (decision ? `已确认：${decision}。` : '') + (d.decision || '不赶夜路，安全抵达优先。') + ` 手动天气：${ds.weather}；路况：${ds.road}。`],
   ];
   return (
     <div className="info-accordion">
@@ -1050,14 +1141,6 @@ function TodoSheet({
             </select>
           </label>
         </div>
-        <label>
-          关联节点
-          <input
-            value={draft.node}
-            onChange={(e) => setDraft({ ...draft, node: e.target.value })}
-            placeholder="可选"
-          />
-        </label>
         <label>
           截止时间
           <input
@@ -1153,4 +1236,43 @@ function JournalPage({
       </article>
     </>
   );
+}
+function SystemJournal({ d, events, ds, hasState, statuses, todos }: { d: TripDay; events: TripEvent[]; ds: DayState; hasState: boolean; statuses: Record<string, NodeStatus>; todos: Todo[] }) {
+  const completedNodes = d.timeline.filter((_, i) => statuses[key(d.id, i)] === 'completed').map(x => x.title);
+  const skippedNodes = d.timeline.filter((_, i) => statuses[key(d.id, i)] === 'skipped').map(x => x.title);
+  const dayTodos = todos.filter(x => x.day === d.id && x.done);
+  return <article className="system-journal"><h2>系统行程记录</h2><p>计划：{d.title} · {d.km} · 住宿 {d.stay}</p><p>{hasState ? <>手动状态：天气 {ds.weather}，路况 {ds.road}，体力 {ds.energy}，油量 {ds.fuel}{ds.eta ? `，预计到达 ${ds.eta}` : ''}</> : '当天状态尚未记录。'}</p>{completedNodes.length > 0 && <p>已完成：{completedNodes.join('、')}</p>}{skippedNodes.length > 0 && <p>已跳过：{skippedNodes.join('、')}</p>}{dayTodos.length > 0 && <p>完成待办：{dayTodos.map(x => x.text).join('、')}</p>}{events.length === 0 ? <p>当天尚无操作记录。</p> : <ol>{events.map(x => <li key={x.id}><time>{new Date(x.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time> {x.text}</li>)}</ol>}</article>;
+}
+function JournalSpread({ d, journal, events, statuses, todos }: { d: TripDay; journal: Journal; events: TripEvent[]; statuses: Record<string, NodeStatus>; todos: Todo[] }) {
+  const theme = journalThemes[d.id];
+  const recorded = (value?: string) => value?.trim() || '旅行时填写';
+  const completed = d.timeline.filter((_, i) => statuses[key(d.id, i)] === 'completed').length;
+  const doneTodos = todos.filter(x => x.day === d.id && x.done);
+  const images = journal.photos.length ? journal.photos.slice(0, 3) : d.id === 1 ? [] : [dayImages[d.id]];
+  return <article className="journal-spread" style={{ '--journal-accent': theme.accent, '--journal-pale': theme.pale } as React.CSSProperties}>
+    <header className="spread-header">
+      <div className="spread-day">DAY <b>{String(d.id).padStart(2, '0')}</b><small>2026 · {d.date}</small></div>
+      <div className="spread-title"><span>{theme.motif}</span><h2>{theme.name}</h2><p>{theme.subtitle}</p></div>
+      <div className="spread-stamp" aria-hidden="true">青甘<br />手帖</div>
+    </header>
+    <div className="spread-grid">
+      <section className="spread-left">
+        <div className="spread-facts"><span><b>{d.km}</b>计划里程</span><span><b>{d.drive}</b>计划驾驶</span><span><b>{completed}/{d.timeline.length}</b>已完成节点</span></div>
+        <h3>今日路线 <small>ROAD NOTES</small></h3>
+        <ol className="spread-timeline">{d.timeline.map((node, i) => {
+          const status = statuses[key(d.id, i)] || 'pending';
+          return <li key={i} className={status}><i>{i + 1}</i><time>{node.time}</time><div><strong>{node.title}</strong><small>{status === 'pending' ? '计划节点' : statusText[status]}{node.note ? ` · ${node.note}` : ''}</small></div></li>;
+        })}</ol>
+        <div className="spread-mini-grid"><section><h4>天气与起居</h4><p>{recorded(journal.weather)}</p></section><section><h4>吃了什么</h4><p>{recorded(journal.food)}</p></section></div>
+        <div className="spread-checked"><h4>当天完成</h4><p>{doneTodos.length ? doneTodos.map(x => x.text).join('、') : '尚无完成的待办'}</p></div>
+      </section>
+      <section className="spread-right">
+        <div className="spread-photo-grid">{images.length ? images.map((photo, i) => <figure key={i} className={i === 0 ? 'hero' : ''}><img src={photo} alt={journal.photos.length ? `当天照片 ${i + 1}` : `${d.title}参考风景`} /><figcaption>{journal.photos.length ? `旅途照片 ${String(i + 1).padStart(2, '0')}` : '路线参考影像 · 可替换'}</figcaption></figure>) : <div className="spread-photo-empty"><Camera /><span>留一格给张掖的第一张照片</span></div>}</div>
+        <div className="spread-route"><span>行程方向</span><strong>{d.title}</strong><small>实际路线与感受可在下方记录</small></div>
+        <div className="spread-notes"><section><h4>今日所行</h4><p>{recorded(journal.route)}</p></section><section><h4>今日一事</h4><p>{recorded(journal.moment)}</p></section><section><h4>实际里程与花费</h4><p>{recorded(journal.cost)}</p></section></div>
+        <div className="spread-quote"><span>留给今天的一句话</span><p>{recorded(journal.closing)}</p></div>
+      </section>
+    </div>
+    <footer className="spread-footer"><span>自驾青甘 · 一个人的公路旅记</span><span>{events.length ? `${events.length} 条操作记录已留存` : '旅程记录待开始'} · {d.stay}</span></footer>
+  </article>;
 }
