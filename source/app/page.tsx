@@ -341,17 +341,33 @@ export default function Roadbook() {
     let cancelled = false;
     const capture = async () => {
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      await document.fonts?.ready.catch(() => undefined);
       const nodes = [...document.querySelectorAll<HTMLElement>('.image-export-document .journal-spread')];
       try {
         const images: { day: number; src: string }[] = [];
+        const compactWebView = /MicroMessenger|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         for (const node of nodes) {
           await Promise.all([...node.querySelectorAll('img')].map(img => img.decode().catch(() => {})));
-          const src = await toJpeg(node, { quality: .92, pixelRatio: 2, backgroundColor: '#f1e3ca', cacheBust: false });
+          const render = (pixelRatio: number, quality: number) => toJpeg(node, {
+            quality,
+            pixelRatio,
+            backgroundColor: '#f1e3ca',
+            cacheBust: false,
+          });
+          let src: string;
+          try {
+            src = await render(compactWebView ? 1.2 : 2, compactWebView ? .86 : .92);
+          } catch {
+            // Older WeChat WebViews can reject a large canvas. Retry with a smaller one.
+            src = await render(.8, .8);
+          }
           images.push({ day: Number(node.dataset.day), src });
+          await new Promise(resolve => setTimeout(resolve, 40));
         }
         if (!cancelled) setImageExport({ busy: false, images });
-      } catch {
-        if (!cancelled) setImageExport({ busy: false, images: [], error: '图片生成失败，请刷新页面后重试。' });
+      } catch (error) {
+        console.error('Journal image export failed', error);
+        if (!cancelled) setImageExport({ busy: false, images: [], error: '图片生成失败。请关闭其他页面、重新打开旅记后再试；仍失败时请在手机浏览器中打开。' });
       }
     };
     capture();
