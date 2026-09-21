@@ -1,6 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { toJpeg } from 'html-to-image';
 import {
   AlertTriangle,
   CalendarDays,
@@ -59,7 +60,6 @@ type Confirmation = {
   state: DayState;
   pickup: Saved['pickup'];
 };
-type UndoState = { statuses: Record<string, NodeStatus>; todos: Todo[]; events: TripEvent[]; confirmed: Record<number, Confirmation> };
 type Journal = {
   weather?: string;
   route?: string;
@@ -87,7 +87,6 @@ type Saved = {
   journal: Record<number, Journal>;
   confirmed?: Record<number, Confirmation>;
   events?: TripEvent[];
-  undo?: UndoState | null;
   manualDay?: number | null;
   finished?: boolean;
 };
@@ -109,7 +108,6 @@ const defaults: Saved = {
   journal: {},
   confirmed: {},
   events: [],
-  undo: null,
   manualDay: null,
   finished: false,
 };
@@ -159,9 +157,13 @@ const statusText: Record<NodeStatus, string> = {
 function load(): Saved {
   if (typeof window === 'undefined') return defaults;
   try {
+    const saved = JSON.parse(localStorage.getItem('qinggan-roadbook-v2') || '{}');
+    const existingTodos: Todo[] = Array.isArray(saved.todos) ? saved.todos : [];
+    const existingIds = new Set(existingTodos.map(todo => todo.id));
     return {
       ...defaults,
-      ...JSON.parse(localStorage.getItem('qinggan-roadbook-v2') || '{}'),
+      ...saved,
+      todos: [...existingTodos, ...initialTodos.filter(todo => !existingIds.has(todo.id))],
     };
   } catch {
     return defaults;
@@ -202,7 +204,8 @@ export default function Roadbook() {
     [todoOpen, setTodoOpen] = useState(false),
     [todoFilter, setTodoFilter] = useState<'pre' | 'trip' | 'done'>('pre'),
     [draftStatus, setDraftStatus] = useState<NodeStatus>('pending'),
-    [printMode, setPrintMode] = useState<'day' | 'all' | null>(null),
+    [imageMode, setImageMode] = useState<'day' | 'all' | null>(null),
+    [imageExport, setImageExport] = useState<{ busy: boolean; images: { day: number; src: string }[]; error?: string }>({ busy: false, images: [] }),
     [todoDraft, setTodoDraft] = useState({
       text: '',
       group: '行程',
@@ -279,7 +282,6 @@ export default function Roadbook() {
       return { ...s, statuses, events: [...(s.events || []), logEvent(day, 'node', `${d.timeline[selected].title}：${statusText[next]}`)] };
     });
   const confirmDecision = () => setState(s => {
-    const previous = { statuses: { ...s.statuses }, todos: s.todos.map(x => ({ ...x })), events: [...(s.events || [])], confirmed: { ...(s.confirmed || {}) } };
     const statuses = { ...s.statuses };
     if (draftStatus === 'current') Object.keys(statuses).filter(k => k.startsWith(day + '-') && statuses[k] === 'current').forEach(k => statuses[k] = 'pending');
     statuses[key(day, selected)] = draftStatus;
@@ -297,9 +299,17 @@ export default function Roadbook() {
       if (index >= 0) statuses[key(day, index)] = 'skipped';
       added.push(logEvent(day, 'decision', `${target}已按建议跳过`));
     }
-    return { ...s, statuses, todos, confirmed: { ...(s.confirmed || {}), [day]: confirmation }, events: [...(s.events || []), ...added], undo: previous };
+    const shouldAdvance = selected < d.timeline.length - 1;
+    const nextSelected = shouldAdvance ? selected + 1 : selected;
+    return {
+      ...s,
+      statuses,
+      todos,
+      dayState: { ...s.dayState, [day]: { ...(s.dayState[day] || makeDay()), selected: nextSelected, note: '' } },
+      confirmed: { ...(s.confirmed || {}), [day]: confirmation },
+      events: [...(s.events || []), ...added],
+    };
   });
-  const undoDecision = () => setState(s => s.undo ? ({ ...s, ...s.undo, undo: null }) : s);
   const completed = d.timeline.filter(
     (_, i) => state.statuses[key(day, i)] === 'completed',
   ).length;
@@ -318,15 +328,35 @@ export default function Roadbook() {
   const currentConfirmation = state.confirmed?.[day];
   const effectiveDecision = currentConfirmation?.decision;
   const dayEvents = (state.events || []).filter(x => x.day === day);
-  const printJournal = (mode: 'day' | 'all') => {
-    setPrintMode(mode);
-    setTimeout(() => window.print(), 100);
+  const visibleTodos = state.todos.filter(t => todoFilter === 'done' ? t.done : !t.done && (todoFilter === 'pre' ? (!t.day || t.group === '出发前' || t.group === '预订') : !!t.day && t.group !== '出发前' && t.group !== '预订'));
+  const todoGroups = todoFilter === 'trip'
+    ? days.map(item => ({ id: `day-${item.id}`, label: `D${item.id} · ${item.date} · ${item.title}`, items: visibleTodos.filter(todo => todo.day === item.id) })).filter(group => group.items.length)
+    : [{ id: todoFilter, label: todoFilter === 'done' ? '已完成记录' : '出发前准备', items: visibleTodos }];
+  const exportJournalImages = (mode: 'day' | 'all') => {
+    setImageExport({ busy: true, images: [] });
+    setImageMode(mode);
   };
   useEffect(() => {
-    const clear = () => setPrintMode(null);
-    window.addEventListener('afterprint', clear);
-    return () => window.removeEventListener('afterprint', clear);
-  }, []);
+    if (!imageMode) return;
+    let cancelled = false;
+    const capture = async () => {
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const nodes = [...document.querySelectorAll<HTMLElement>('.image-export-document .journal-spread')];
+      try {
+        const images: { day: number; src: string }[] = [];
+        for (const node of nodes) {
+          await Promise.all([...node.querySelectorAll('img')].map(img => img.decode().catch(() => {})));
+          const src = await toJpeg(node, { quality: .92, pixelRatio: 2, backgroundColor: '#f1e3ca', cacheBust: false });
+          images.push({ day: Number(node.dataset.day), src });
+        }
+        if (!cancelled) setImageExport({ busy: false, images });
+      } catch {
+        if (!cancelled) setImageExport({ busy: false, images: [], error: '图片生成失败，请刷新页面后重试。' });
+      }
+    };
+    capture();
+    return () => { cancelled = true; };
+  }, [imageMode]);
   const saveTodo = () => {
     if (!todoDraft.text.trim()) return;
     setState((s) => ({
@@ -401,7 +431,8 @@ export default function Roadbook() {
           离线可用
         </span>
       </header>
-      {printMode && <section className="print-document">{(printMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} ds={state.dayState[item.id]} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
+      {imageMode && <section className="image-export-document" aria-hidden="true">{(imageMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} ds={state.dayState[item.id]} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
+      {(imageExport.busy || imageExport.images.length > 0 || imageExport.error) && <ImageExportSheet value={imageExport} close={() => { setImageExport({ busy: false, images: [] }); setImageMode(null); }} />}
       {tab === 'today' && (
         <section className="view">
           {state.finished && <div className="trip-finished"><strong>旅程已结束</strong><span>可以在旅记中回看和导出七天记录。</span><button onClick={() => setTab('journal')}>查看旅记</button></div>}
@@ -503,8 +534,6 @@ export default function Roadbook() {
             draftStatus={draftStatus}
             setDraftStatus={setDraftStatus}
             onConfirm={confirmDecision}
-            onUndo={undoDecision}
-            canUndo={!!state.undo}
             confirmedAt={currentConfirmation?.at}
             decision={decision}
             pickup={state.pickup}
@@ -592,7 +621,7 @@ export default function Roadbook() {
             <button className={todoFilter === 'done' ? 'active' : ''} onClick={() => setTodoFilter('done')}>已完成（{state.todos.filter(x => x.done).length}）</button>
           </div>
           <div className="todo-list">
-            {state.todos.filter(t => todoFilter === 'done' ? t.done : !t.done && (todoFilter === 'pre' ? (!t.day || t.group === '出发前' || t.group === '预订') : !!t.day && t.group !== '出发前' && t.group !== '预订')).map((t) => (
+            {todoGroups.map(group => <section className="todo-day-group" key={group.id}><h2>{group.label}<small>{group.items.length}项</small></h2>{group.items.map((t) => (
               <label
                 key={t.id}
                 className={'todo-row ' + (t.done ? 'done' : '')}
@@ -629,7 +658,7 @@ export default function Roadbook() {
                   <Trash2 />
                 </button>
               </label>
-            ))}
+            ))}</section>)}
           </div>
           {todoOpen && (
             <TodoSheet
@@ -671,8 +700,8 @@ export default function Roadbook() {
           <h2 className="journal-preview-heading">当日手帐预览 <span>内容和照片会随记录更新</span></h2>
           <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} ds={state.dayState[day]} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
           <SystemJournal d={d} events={dayEvents} ds={ds} hasState={Boolean(state.dayState[day])} statuses={state.statuses} todos={state.todos} />
-          <div className="journal-actions"><button onClick={() => printJournal('day')}><Download />导出当天 PDF</button><button onClick={() => printJournal('all')}><Download />导出全程 PDF</button></div>
-          <article className="backup"><h3>本机数据备份</h3><p>PDF 用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
+          <div className="journal-actions"><button onClick={() => exportJournalImages('day')}><Download />生成当天图片</button><button onClick={() => exportJournalImages('all')}><Download />生成七日图片</button></div>
+          <article className="backup"><h3>本机数据备份</h3><p>旅记图片用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
         </section>
       )}
       <nav className="bottom-nav">
@@ -772,8 +801,6 @@ function DecisionCenterImpl(
     draftStatus,
     setDraftStatus,
     onConfirm,
-    onUndo,
-    canUndo,
     confirmedAt,
     decision,
     pickup,
@@ -790,8 +817,6 @@ function DecisionCenterImpl(
     draftStatus: NodeStatus;
     setDraftStatus: (x: NodeStatus) => void;
     onConfirm: () => void;
-    onUndo: () => void;
-    canUndo: boolean;
     confirmedAt?: string;
     decision: { level: string; title: string; text: string };
     pickup: string;
@@ -933,8 +958,7 @@ function DecisionCenterImpl(
         <Check />
         确认并同步
       </button>
-      {confirmedAt && <p className="sync-note">上次确认：{new Date(confirmedAt).toLocaleString('zh-CN')} · 四页已同步</p>}
-      {canUndo && <button className="undo-button" onClick={onUndo}>撤销上次确认</button>}
+      {confirmedAt && <p className="sync-note">最近提交：{new Date(confirmedAt).toLocaleString('zh-CN')} · 可从上方节点选择器返回并更新记录</p>}
     </section>
   );
 }
@@ -1106,10 +1130,10 @@ function TodoSheet({
 }) {
   return (
     <div className="sheet-backdrop" onClick={close}>
-      <section className="todo-sheet" onClick={(e) => e.stopPropagation()}>
+      <form className="todo-sheet" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); save(); }}>
         <header>
           <h2>新增待办</h2>
-          <button onClick={close}>
+          <button type="button" onClick={close}>
             <X />
           </button>
         </header>
@@ -1117,6 +1141,7 @@ function TodoSheet({
           标题
           <input
             autoFocus
+            required
             value={draft.text}
             onChange={(e) => setDraft({ ...draft, text: e.target.value })}
             placeholder="例如：检查备用轮胎"
@@ -1166,14 +1191,32 @@ function TodoSheet({
           />
         </label>
         <footer>
-          <button onClick={close}>取消</button>
-          <button className="save" onClick={save}>
+          <button type="button" onClick={close}>取消</button>
+          <button type="submit" className="save" disabled={!draft.text.trim()}>
             保存
           </button>
         </footer>
-      </section>
+      </form>
     </div>
   );
+}
+function ImageExportSheet({ value, close }: { value: { busy: boolean; images: { day: number; src: string }[]; error?: string }; close: () => void }) {
+  const isWechat = typeof navigator !== 'undefined' && /MicroMessenger/i.test(navigator.userAgent);
+  const download = (item: { day: number; src: string }) => {
+    const link = document.createElement('a');
+    link.href = item.src;
+    link.download = `2026青甘旅记-D${item.day}.jpg`;
+    link.click();
+  };
+  return <div className="sheet-backdrop export-backdrop" onClick={close}>
+    <section className="image-export-sheet" role="dialog" aria-modal="true" aria-labelledby="image-export-title" onClick={e => e.stopPropagation()}>
+      <header><div><h2 id="image-export-title">旅记图片</h2><p>{isWechat ? '微信内请长按下方图片，选择“保存图片”。' : '图片已生成，可预览或保存到设备。'}</p></div><button aria-label="关闭" onClick={close}><X /></button></header>
+      {value.busy && <div className="export-loading"><span/>正在生成高清图片…</div>}
+      {value.error && <p className="export-error">{value.error}</p>}
+      {value.images.length > 0 && <div className="export-images">{value.images.map(item => <figure key={item.day}><img src={item.src} alt={`D${item.day}旅记导出图片`} /><figcaption><span>D{item.day} · {days[item.day - 1].date}</span>{!isWechat && <button onClick={() => download(item)}><Download />保存图片</button>}</figcaption></figure>)}</div>}
+      {value.images.length > 1 && !isWechat && <button className="save-all-images" onClick={() => value.images.forEach((item, i) => setTimeout(() => download(item), i * 180))}><Download />依次保存全部图片</button>}
+    </section>
+  </div>;
 }
 function JournalPage({
   d,
@@ -1261,7 +1304,11 @@ function JournalSpread({ d, journal, ds, events, statuses, todos }: { d: TripDay
   const scenicPhotos = actualPhotos.slice(2);
   const referencePhoto = d.id === 1 ? undefined : dayImages[d.id];
   const routeX = stops.map((_, i) => 35 + (i * 430) / Math.max(1, stops.length - 1));
-  return <article className="journal-spread" style={{ '--journal-accent': theme.accent, '--journal-pale': theme.pale } as React.CSSProperties}>
+  const routePhoto = d.id === 5 ? './images/water-yadan.jpg' : dayImages[d.id];
+  const routeBackdrop = d.id === 1 || d.id === 4
+    ? { backgroundImage: `linear-gradient(#f6edddd4,#f6edddd4),url('./images/journal-vignettes.jpg')`, backgroundSize: 'auto,700% 100%', backgroundPosition: `center,${(d.id - 1) * 100 / 6}% center` }
+    : { backgroundImage: `linear-gradient(#f6edddd4,#f6edddd4),url('${routePhoto}')`, backgroundSize: 'auto,cover', backgroundPosition: 'center' };
+  return <article className="journal-spread" data-day={d.id} style={{ '--journal-accent': theme.accent, '--journal-pale': theme.pale } as React.CSSProperties}>
     <div className="spread-grid">
       <section className="spread-left">
         <header className="spread-header"><span className="spread-day">D{d.id}</span><div><h2>{theme.name}</h2><p>{theme.subtitle}</p></div><time>2026 · {d.date}</time></header>
@@ -1282,7 +1329,7 @@ function JournalSpread({ d, journal, ds, events, statuses, todos }: { d: TripDay
         <footer className="left-footnote">{doneTodos.length ? `已完成：${doneTodos.map(x => x.text).join('、')}` : '完成的待办会留在这里。'}</footer>
       </section>
       <section className="spread-right">
-        <div className="route-sketch"><span className="paper-clip" aria-hidden="true"/><h3>计划路线</h3><svg viewBox="0 0 500 140" role="img" aria-label={`${stops.join('至')}的计划路线示意图`}><path d="M35 74 C130 28 190 110 270 70 S390 50 465 72" className="sketch-route"/>{stops.map((stop, i) => <g key={`${stop}-${i}`} transform={`translate(${routeX[i]} ${i % 2 ? 67 : 74})`}><circle r="6"/><text y={i % 2 ? -15 : 23} textAnchor="middle">{stop}</text></g>)}</svg><p>{d.summary}</p></div>
+        <div className="route-sketch" style={routeBackdrop}><span className="paper-clip" aria-hidden="true"/><h3>计划路线</h3><svg viewBox="0 0 500 140" role="img" aria-label={`${stops.join('至')}的计划路线示意图`}><path d="M35 74 C130 28 190 110 270 70 S390 50 465 72" className="sketch-route"/>{stops.map((stop, i) => <g key={`${stop}-${i}`} transform={`translate(${routeX[i]} ${i % 2 ? 67 : 74})`}><circle r="6"/><text y={i % 2 ? -15 : 23} textAnchor="middle">{stop}</text></g>)}</svg><p>{d.summary}</p></div>
         <div className="scenic-heading">沿途照片 <small>{scenicPhotos.length ? '实拍记录' : '参考影像 · 可用实拍替换'}</small></div>
         <div className="scenic-photos">{[0, 1].map(i => <figure key={i} className={`scenic-photo scenic-${i + 1}`}><span className="photo-tape" aria-hidden="true"/>{scenicPhotos[i] ? <img src={scenicPhotos[i]} alt={`沿途实拍照片 ${i + 1}`} /> : i === 0 && referencePhoto ? <img src={referencePhoto} alt={`${d.title}参考风景`} /> : <div className="photo-placeholder"><Camera/><span>留给沿途风景</span></div>}<figcaption>{scenicPhotos[i] ? `沿途 · ${i + 1}` : i === 0 && referencePhoto ? '行前参考，待实拍替换' : '待添加照片'}</figcaption></figure>)}</div>
         <div className="spread-note-grid"><section className="scrap-card note-card"><h3>个人随笔</h3><p>{recorded(journal.moment)}</p></section><section className="scrap-card food-card"><h3>今日美食</h3><p>{recorded(journal.food)}</p></section></div>
