@@ -134,9 +134,9 @@ const journalThemes: Record<number, { name: string; subtitle: string; motif: str
   2: { name: '丹霞向西', subtitle: '从张掖驶向敦煌', motif: '02 / WESTBOUND', accent: '#bb6240', pale: '#f3e7dc' },
   3: { name: '沙州一日', subtitle: '石窟与鸣沙山', motif: '03 / DUNHUANG', accent: '#a6753f', pale: '#f3eadb' },
   4: { name: '穿过荒原', subtitle: '向冷湖和雅丹去', motif: '04 / WILDERNESS', accent: '#5c6663', pale: '#e8e9e3' },
-  5: { name: '公路与水', subtitle: '雅丹之后是 G315', motif: '05 / THE ROAD', accent: '#477c84', pale: '#e3eef0' },
+  5: { name: '沙路长歌', subtitle: '雅丹之后是 G315', motif: '05 / THE ROAD', accent: '#477c84', pale: '#e3eef0' },
   6: { name: '盐湖来信', subtitle: '从柴达木到茶卡', motif: '06 / SALT LAKE', accent: '#5c8b92', pale: '#e7f0ee' },
-  7: { name: '湖边收尾', subtitle: '望一眼青海湖，再回家', motif: '07 / HOMECOMING', accent: '#557b90', pale: '#e5edf1' },
+  7: { name: '暮湖辞行', subtitle: '望一眼青海湖，再回家', motif: '07 / HOMECOMING', accent: '#557b90', pale: '#e5edf1' },
 };
 const journalRouteStops: Record<number, string[]> = {
   1: ['张掖机场', '张掖市区'],
@@ -1329,7 +1329,7 @@ function JournalSpread({ d, journal, ds, events, statuses, todos }: { d: TripDay
         <footer className="left-footnote">{doneTodos.length ? `已完成：${doneTodos.map(x => x.text).join('、')}` : '完成的待办会留在这里。'}</footer>
       </section>
       <section className="spread-right">
-        <div className="route-sketch" style={routeBackdrop}><span className="paper-clip" aria-hidden="true"/><h3>计划路线</h3><svg viewBox="0 0 500 140" role="img" aria-label={`${stops.join('至')}的计划路线示意图`}><path d="M35 74 C130 28 190 110 270 70 S390 50 465 72" className="sketch-route"/>{stops.map((stop, i) => <g key={`${stop}-${i}`} transform={`translate(${routeX[i]} ${i % 2 ? 67 : 74})`}><circle r="6"/><text y={i % 2 ? -15 : 23} textAnchor="middle">{stop}</text></g>)}</svg><p>{d.summary}</p></div>
+        <div className="route-sketch" style={routeBackdrop}><span className="paper-clip" aria-hidden="true"/><h3>计划路线</h3><svg viewBox="0 0 500 140" role="img" aria-label={`${stops.join('至')}的计划路线示意图`}><path d="M35 74 C130 28 190 110 270 70 S390 50 465 72" className="sketch-route"/>{stops.map((stop, i) => <g key={`${stop}-${i}`} transform={`translate(${routeX[i]} ${i % 2 ? 67 : 74})`}><circle r="6"/><text y={i % 2 ? -15 : 23} textAnchor="middle">{stop}</text></g>)}</svg></div>
         <div className="scenic-heading">沿途照片 <small>{scenicPhotos.length ? '实拍记录' : '参考影像 · 可用实拍替换'}</small></div>
         <div className="scenic-photos">{[0, 1].map(i => <figure key={i} className={`scenic-photo scenic-${i + 1}`}><span className="photo-tape" aria-hidden="true"/>{scenicPhotos[i] ? <img src={scenicPhotos[i]} alt={`沿途实拍照片 ${i + 1}`} /> : i === 0 && referencePhoto ? <img src={referencePhoto} alt={`${d.title}参考风景`} /> : <div className="photo-placeholder"><Camera/><span>留给沿途风景</span></div>}<figcaption>{scenicPhotos[i] ? `沿途 · ${i + 1}` : i === 0 && referencePhoto ? '行前参考，待实拍替换' : '待添加照片'}</figcaption></figure>)}</div>
         <div className="spread-note-grid"><section className="scrap-card note-card"><h3>个人随笔</h3><p>{recorded(journal.moment)}</p></section><section className="scrap-card food-card"><h3>今日美食</h3><p>{recorded(journal.food)}</p></section></div>
