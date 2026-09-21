@@ -140,6 +140,15 @@ const journalThemes: Record<number, { name: string; subtitle: string; motif: str
   6: { name: '盐湖来信', subtitle: '从柴达木到茶卡', motif: '06 / SALT LAKE', accent: '#5c8b92', pale: '#e7f0ee' },
   7: { name: '湖边收尾', subtitle: '望一眼青海湖，再回家', motif: '07 / HOMECOMING', accent: '#557b90', pale: '#e5edf1' },
 };
+const journalRouteStops: Record<number, string[]> = {
+  1: ['张掖机场', '张掖市区'],
+  2: ['张掖', '七彩丹霞', '瓜州', '敦煌'],
+  3: ['敦煌', '莫高窟', '鸣沙山', '敦煌'],
+  4: ['敦煌', '当金山', '黑独山', '冷湖', '水上雅丹'],
+  5: ['水上雅丹', 'G315', '大柴旦'],
+  6: ['大柴旦', '德令哈', '茶卡盐湖', '茶卡镇'],
+  7: ['茶卡', '黑马河', '西宁机场'],
+};
 const statusText: Record<NodeStatus, string> = {
   pending: '未开始',
   current: '当前',
@@ -392,7 +401,7 @@ export default function Roadbook() {
           离线可用
         </span>
       </header>
-      {printMode && <section className="print-document">{(printMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
+      {printMode && <section className="print-document">{(printMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} ds={state.dayState[item.id]} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
       {tab === 'today' && (
         <section className="view">
           {state.finished && <div className="trip-finished"><strong>旅程已结束</strong><span>可以在旅记中回看和导出七天记录。</span><button onClick={() => setTab('journal')}>查看旅记</button></div>}
@@ -660,7 +669,7 @@ export default function Roadbook() {
             addPhotos={(files) => addPhotos(day, files)}
           />
           <h2 className="journal-preview-heading">当日手帐预览 <span>内容和照片会随记录更新</span></h2>
-          <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
+          <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} ds={state.dayState[day]} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
           <SystemJournal d={d} events={dayEvents} ds={ds} hasState={Boolean(state.dayState[day])} statuses={state.statuses} todos={state.todos} />
           <div className="journal-actions"><button onClick={() => printJournal('day')}><Download />导出当天 PDF</button><button onClick={() => printJournal('all')}><Download />导出全程 PDF</button></div>
           <article className="backup"><h3>本机数据备份</h3><p>PDF 用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
@@ -1243,36 +1252,43 @@ function SystemJournal({ d, events, ds, hasState, statuses, todos }: { d: TripDa
   const dayTodos = todos.filter(x => x.day === d.id && x.done);
   return <article className="system-journal"><h2>系统行程记录</h2><p>计划：{d.title} · {d.km} · 住宿 {d.stay}</p><p>{hasState ? <>手动状态：天气 {ds.weather}，路况 {ds.road}，体力 {ds.energy}，油量 {ds.fuel}{ds.eta ? `，预计到达 ${ds.eta}` : ''}</> : '当天状态尚未记录。'}</p>{completedNodes.length > 0 && <p>已完成：{completedNodes.join('、')}</p>}{skippedNodes.length > 0 && <p>已跳过：{skippedNodes.join('、')}</p>}{dayTodos.length > 0 && <p>完成待办：{dayTodos.map(x => x.text).join('、')}</p>}{events.length === 0 ? <p>当天尚无操作记录。</p> : <ol>{events.map(x => <li key={x.id}><time>{new Date(x.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time> {x.text}</li>)}</ol>}</article>;
 }
-function JournalSpread({ d, journal, events, statuses, todos }: { d: TripDay; journal: Journal; events: TripEvent[]; statuses: Record<string, NodeStatus>; todos: Todo[] }) {
+function JournalSpread({ d, journal, ds, events, statuses, todos }: { d: TripDay; journal: Journal; ds?: DayState; events: TripEvent[]; statuses: Record<string, NodeStatus>; todos: Todo[] }) {
   const theme = journalThemes[d.id];
-  const recorded = (value?: string) => value?.trim() || '旅行时填写';
-  const completed = d.timeline.filter((_, i) => statuses[key(d.id, i)] === 'completed').length;
+  const stops = journalRouteStops[d.id];
+  const recorded = (value?: string) => value?.trim() || '待记录';
   const doneTodos = todos.filter(x => x.day === d.id && x.done);
-  const images = journal.photos.length ? journal.photos.slice(0, 3) : d.id === 1 ? [] : [dayImages[d.id]];
+  const actualPhotos = journal.photos.slice(0, 4);
+  const scenicPhotos = actualPhotos.slice(2);
+  const referencePhoto = d.id === 1 ? undefined : dayImages[d.id];
+  const routeX = stops.map((_, i) => 35 + (i * 430) / Math.max(1, stops.length - 1));
   return <article className="journal-spread" style={{ '--journal-accent': theme.accent, '--journal-pale': theme.pale } as React.CSSProperties}>
-    <header className="spread-header">
-      <div className="spread-day">DAY <b>{String(d.id).padStart(2, '0')}</b><small>2026 · {d.date}</small></div>
-      <div className="spread-title"><span>{theme.motif}</span><h2>{theme.name}</h2><p>{theme.subtitle}</p></div>
-      <div className="spread-stamp" aria-hidden="true">青甘<br />手帖</div>
-    </header>
     <div className="spread-grid">
       <section className="spread-left">
-        <div className="spread-facts"><span><b>{d.km}</b>计划里程</span><span><b>{d.drive}</b>计划驾驶</span><span><b>{completed}/{d.timeline.length}</b>已完成节点</span></div>
-        <h3>今日路线 <small>ROAD NOTES</small></h3>
-        <ol className="spread-timeline">{d.timeline.map((node, i) => {
-          const status = statuses[key(d.id, i)] || 'pending';
-          return <li key={i} className={status}><i>{i + 1}</i><time>{node.time}</time><div><strong>{node.title}</strong><small>{status === 'pending' ? '计划节点' : statusText[status]}{node.note ? ` · ${node.note}` : ''}</small></div></li>;
-        })}</ol>
-        <div className="spread-mini-grid"><section><h4>天气与起居</h4><p>{recorded(journal.weather)}</p></section><section><h4>吃了什么</h4><p>{recorded(journal.food)}</p></section></div>
-        <div className="spread-checked"><h4>当天完成</h4><p>{doneTodos.length ? doneTodos.map(x => x.text).join('、') : '尚无完成的待办'}</p></div>
+        <header className="spread-header"><span className="spread-day">D{d.id}</span><div><h2>{theme.name}</h2><p>{theme.subtitle}</p></div><time>2026 · {d.date}</time></header>
+        <div className="spread-topcards">
+          <section className="scrap-card weather-card"><h3>天气与路况</h3><p>{ds ? `${ds.weather} · ${ds.road}` : '待当天记录'}</p><small>{recorded(journal.weather)}</small></section>
+          <section className="scrap-card story-card"><h3>今日记事</h3><p>{recorded(journal.route)}</p></section>
+          <section className="scrap-card mileage-card"><h3>里程记录</h3><p>{recorded(journal.cost)}</p><small>计划 {d.km} · 驾驶 {d.drive}</small></section>
+        </div>
+        <div className="spread-actual">
+          <section className="actual-timeline"><h3>实际行程 <small>TRAVEL LOG</small></h3><ol>{d.timeline.map((node, i) => {
+            const status = statuses[key(d.id, i)] || 'pending';
+            const event = status !== 'pending' ? [...events].reverse().find(x => (x.kind === 'node' || x.kind === 'decision') && x.text.includes(node.title)) : undefined;
+            const actualTime = event ? new Date(event.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : undefined;
+            return <li key={i} className={status}><span className="time-dot"/><time>{actualTime || node.time}</time><div><strong>{node.title}</strong><small>{actualTime ? statusText[status] : `计划 · ${statusText[status]}`}</small></div></li>;
+          })}</ol></section>
+          <div className="actual-polaroids">{[0, 1].map(i => <figure key={i} className={`polaroid polaroid-${i + 1}`}><span className="photo-tape" aria-hidden="true"/>{actualPhotos[i] ? <img src={actualPhotos[i]} alt={`当天实拍照片 ${i + 1}`} /> : <div className="photo-placeholder"><Camera/><span>添加实拍照片</span></div>}<figcaption>{actualPhotos[i] ? `这一天 · ${i + 1}` : '等一张路上的照片'}</figcaption></figure>)}</div>
+        </div>
+        <footer className="left-footnote">{doneTodos.length ? `已完成：${doneTodos.map(x => x.text).join('、')}` : '完成的待办会留在这里。'}</footer>
       </section>
       <section className="spread-right">
-        <div className="spread-photo-grid">{images.length ? images.map((photo, i) => <figure key={i} className={i === 0 ? 'hero' : ''}><img src={photo} alt={journal.photos.length ? `当天照片 ${i + 1}` : `${d.title}参考风景`} /><figcaption>{journal.photos.length ? `旅途照片 ${String(i + 1).padStart(2, '0')}` : '路线参考影像 · 可替换'}</figcaption></figure>) : <div className="spread-photo-empty"><Camera /><span>留一格给张掖的第一张照片</span></div>}</div>
-        <div className="spread-route"><span>行程方向</span><strong>{d.title}</strong><small>实际路线与感受可在下方记录</small></div>
-        <div className="spread-notes"><section><h4>今日所行</h4><p>{recorded(journal.route)}</p></section><section><h4>今日一事</h4><p>{recorded(journal.moment)}</p></section><section><h4>实际里程与花费</h4><p>{recorded(journal.cost)}</p></section></div>
-        <div className="spread-quote"><span>留给今天的一句话</span><p>{recorded(journal.closing)}</p></div>
+        <div className="route-sketch"><span className="paper-clip" aria-hidden="true"/><h3>计划路线</h3><svg viewBox="0 0 500 140" role="img" aria-label={`${stops.join('至')}的计划路线示意图`}><path d="M35 74 C130 28 190 110 270 70 S390 50 465 72" className="sketch-route"/>{stops.map((stop, i) => <g key={`${stop}-${i}`} transform={`translate(${routeX[i]} ${i % 2 ? 67 : 74})`}><circle r="6"/><text y={i % 2 ? -15 : 23} textAnchor="middle">{stop}</text></g>)}</svg><p>{d.summary}</p></div>
+        <div className="scenic-heading">沿途照片 <small>{scenicPhotos.length ? '实拍记录' : '参考影像 · 可用实拍替换'}</small></div>
+        <div className="scenic-photos">{[0, 1].map(i => <figure key={i} className={`scenic-photo scenic-${i + 1}`}><span className="photo-tape" aria-hidden="true"/>{scenicPhotos[i] ? <img src={scenicPhotos[i]} alt={`沿途实拍照片 ${i + 1}`} /> : i === 0 && referencePhoto ? <img src={referencePhoto} alt={`${d.title}参考风景`} /> : <div className="photo-placeholder"><Camera/><span>留给沿途风景</span></div>}<figcaption>{scenicPhotos[i] ? `沿途 · ${i + 1}` : i === 0 && referencePhoto ? '行前参考，待实拍替换' : '待添加照片'}</figcaption></figure>)}</div>
+        <div className="spread-note-grid"><section className="scrap-card note-card"><h3>个人随笔</h3><p>{recorded(journal.moment)}</p></section><section className="scrap-card food-card"><h3>今日美食</h3><p>{recorded(journal.food)}</p></section></div>
+        <div className="spread-quote"><div><h3>一句收尾</h3><p>{recorded(journal.closing)}</p></div><div className="day-vignette" style={{ backgroundPosition: `${(d.id - 1) * 100 / 6}% center` }} role="img" aria-label={`${theme.name}水彩景点插画`} /></div>
+        <footer className="spread-footer"><span>{theme.motif}</span><span>{events.length ? `${events.length} 条操作记录` : '待记录'} · {d.stay}</span></footer>
       </section>
     </div>
-    <footer className="spread-footer"><span>自驾青甘 · 一个人的公路旅记</span><span>{events.length ? `${events.length} 条操作记录已留存` : '旅程记录待开始'} · {d.stay}</span></footer>
   </article>;
 }

@@ -10,7 +10,7 @@ export default defineConfig({
   plugins: [react(), {
     name: 'roadbook-offline-cache',
     generateBundle(_options, bundle) {
-      const files = ['index.html', 'favicon.svg', 'manifest.webmanifest', 'route-map-clean-v2.png', ...['danxia', 'mogao', 'water-yadan', 'emerald-lake', 'chaka', 'qinghai-lake'].map(name => `images/${name}.jpg`), ...Object.keys(bundle)];
+      const files = ['index.html', 'favicon.svg', 'manifest.webmanifest', 'route-map-clean-v2.png', ...['danxia', 'mogao', 'water-yadan', 'emerald-lake', 'chaka', 'qinghai-lake', 'journal-vignettes'].map(name => `images/${name}.jpg`), ...Object.keys(bundle)];
       const version = Object.keys(bundle).join('-');
       this.emitFile({ type: 'asset', fileName: 'sw.js', source: `
 const CACHE = 'qinggan-pages-v2-' + ${JSON.stringify(version)};
