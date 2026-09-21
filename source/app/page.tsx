@@ -340,14 +340,21 @@ export default function Roadbook() {
     if (!imageMode) return;
     let cancelled = false;
     const capture = async () => {
+      const wait = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+      const within = <T,>(promise: Promise<T>, ms: number, label: string) => Promise.race([
+        promise,
+        new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout`)), ms)),
+      ]);
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      await document.fonts?.ready.catch(() => undefined);
+      if (document.fonts?.ready) await Promise.race([document.fonts.ready.catch(() => undefined), wait(1500)]);
       const nodes = [...document.querySelectorAll<HTMLElement>('.image-export-document .journal-spread')];
       try {
         const images: { day: number; src: string }[] = [];
-        const compactWebView = /MicroMessenger|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
         for (const node of nodes) {
-          await Promise.all([...node.querySelectorAll('img')].map(img => img.decode().catch(() => {})));
+          await Promise.all([...node.querySelectorAll('img')].map(img => Promise.race([
+            img.decode().catch(() => undefined),
+            wait(1800),
+          ])));
           const render = (pixelRatio: number, quality: number) => toJpeg(node, {
             quality,
             pixelRatio,
@@ -356,13 +363,13 @@ export default function Roadbook() {
           });
           let src: string;
           try {
-            src = await render(compactWebView ? 1.2 : 2, compactWebView ? .86 : .92);
+            src = await within(render(1.15, .86), 15000, 'image render');
           } catch {
-            // Older WeChat WebViews can reject a large canvas. Retry with a smaller one.
-            src = await render(.8, .8);
+            // Retry once with a substantially smaller canvas for constrained WebViews.
+            src = await within(render(.72, .78), 12000, 'fallback render');
           }
           images.push({ day: Number(node.dataset.day), src });
-          await new Promise(resolve => setTimeout(resolve, 40));
+          await wait(80);
         }
         if (!cancelled) setImageExport({ busy: false, images });
       } catch (error) {
