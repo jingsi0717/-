@@ -212,15 +212,24 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
   canvas.height = 720;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('无法创建视频画布。');
-  const drawPage = (image: HTMLImageElement) => {
-    ctx.fillStyle = '#e6d5b8';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const drawPage = (image: HTMLImageElement, target: CanvasRenderingContext2D) => {
+    target.fillStyle = '#e6d5b8';
+    target.fillRect(0, 0, canvas.width, canvas.height);
     const scale = Math.min(canvas.width / image.width, canvas.height / image.height);
     const width = image.width * scale;
     const height = image.height * scale;
-    ctx.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+    target.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
   };
-  drawPage(frames[0]);
+  const pages = frames.map(image => {
+    const page = document.createElement('canvas');
+    page.width = canvas.width;
+    page.height = canvas.height;
+    const pageCtx = page.getContext('2d');
+    if (!pageCtx) throw new Error('无法创建旅记书页。');
+    drawPage(image, pageCtx);
+    return page;
+  });
+  ctx.drawImage(pages[0], 0, 0);
   const stream = canvas.captureStream(24);
   const chunks: BlobPart[] = [];
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
@@ -231,7 +240,7 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
   });
   recorder.start(1000);
   const hold = 1400;
-  const turn = 650;
+  const turn = 1100;
   const total = frames.length * hold + (frames.length - 1) * turn;
   const started = performance.now();
   await new Promise<void>(resolve => {
@@ -243,23 +252,41 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
         remainder -= hold + turn;
         page++;
       }
-      drawPage(frames[page]);
+      ctx.drawImage(pages[page], 0, 0);
       if (page < frames.length - 1 && remainder > hold) {
         const progress = Math.min(1, (remainder - hold) / turn);
         const eased = progress * progress * (3 - 2 * progress);
-        const edge = Math.round(canvas.width * (1 - eased));
+        const spine = canvas.width / 2;
+        const edge = spine + spine * eased;
+        // Center-out page turn: the next spread opens from the book's spine toward the right edge.
         ctx.save();
         ctx.beginPath();
-        ctx.rect(edge, 0, canvas.width - edge, canvas.height);
+        ctx.rect(0, 0, spine, canvas.height);
         ctx.clip();
-        drawPage(frames[page + 1]);
+        ctx.globalAlpha = eased;
+        ctx.drawImage(pages[page + 1], 0, 0);
         ctx.restore();
-        const shadow = ctx.createLinearGradient(edge - 45, 0, edge + 26, 0);
-        shadow.addColorStop(0, '#342c2200');
-        shadow.addColorStop(.62, '#342c2266');
-        shadow.addColorStop(1, '#fff7e666');
-        ctx.fillStyle = shadow;
-        ctx.fillRect(edge - 45, 0, 71, canvas.height);
+        if (eased > 0) {
+          const strip = 12;
+          for (let sourceX = spine; sourceX < canvas.width; sourceX += strip) {
+            const sourceWidth = Math.min(strip, canvas.width - sourceX);
+            const fraction = (sourceX - spine) / spine;
+            const curl = Math.sin(Math.PI * eased) * Math.sin(Math.PI * fraction) * 13;
+            ctx.drawImage(pages[page + 1], sourceX, 0, sourceWidth, canvas.height,
+              spine + (sourceX - spine) * eased, curl, sourceWidth * eased + .5, canvas.height - curl * 2);
+          }
+          const foldShadow = ctx.createLinearGradient(spine, 0, Math.min(edge, spine + 82), 0);
+          foldShadow.addColorStop(0, '#342c2266');
+          foldShadow.addColorStop(1, '#342c2200');
+          ctx.fillStyle = foldShadow;
+          ctx.fillRect(spine, 0, Math.min(edge - spine, 82), canvas.height);
+          const paperEdge = ctx.createLinearGradient(edge - 24, 0, edge + 3, 0);
+          paperEdge.addColorStop(0, '#fff8e800');
+          paperEdge.addColorStop(.75, '#fff8e899');
+          paperEdge.addColorStop(1, '#6e554d99');
+          ctx.fillStyle = paperEdge;
+          ctx.fillRect(edge - 24, 0, 27, canvas.height);
+        }
       }
       if (elapsed < total) requestAnimationFrame(draw);
       else resolve();
