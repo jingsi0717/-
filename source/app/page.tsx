@@ -257,8 +257,13 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
         const progress = Math.min(1, (remainder - hold) / turn);
         const eased = progress * progress * (3 - 2 * progress);
         const spine = canvas.width / 2;
-        const edge = spine + spine * eased;
-        // Center-out page turn: the next spread opens from the book's spine toward the right edge.
+        const curl = Math.sin(Math.PI * eased);
+        const bend = curl * eased;
+        const mapPoint = (u: number, v: number) => ({
+          x: spine + spine * eased * u + bend * (14 * Math.sin(Math.PI * u) + 18 * u * u * Math.sin(Math.PI * v)),
+          y: canvas.height * v - curl * 14 * Math.sin(Math.PI * u) * Math.sin(Math.PI * v),
+        });
+        // Reveal the page beneath while the turning sheet grows out of the spine.
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, 0, spine, canvas.height);
@@ -267,25 +272,55 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
         ctx.drawImage(pages[page + 1], 0, 0);
         ctx.restore();
         if (eased > 0) {
-          const strip = 12;
-          for (let sourceX = spine; sourceX < canvas.width; sourceX += strip) {
-            const sourceWidth = Math.min(strip, canvas.width - sourceX);
-            const fraction = (sourceX - spine) / spine;
-            const curl = Math.sin(Math.PI * eased) * Math.sin(Math.PI * fraction) * 13;
-            ctx.drawImage(pages[page + 1], sourceX, 0, sourceWidth, canvas.height,
-              spine + (sourceX - spine) * eased, curl, sourceWidth * eased + .5, canvas.height - curl * 2);
+          // Warp the page artwork as a mesh, so text and photos bend with the paper.
+          const columns = 24;
+          const rows = 12;
+          const tileWidth = spine / columns;
+          const tileHeight = canvas.height / rows;
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(spine, 0);
+          for (let row = 0; row <= rows; row++) {
+            const edge = mapPoint(1, row / rows);
+            ctx.lineTo(edge.x, edge.y);
           }
-          const foldShadow = ctx.createLinearGradient(spine, 0, Math.min(edge, spine + 82), 0);
+          ctx.lineTo(spine, canvas.height);
+          ctx.closePath();
+          ctx.clip();
+          for (let row = 0; row < rows; row++) {
+            for (let column = 0; column < columns; column++) {
+              const u = column / columns;
+              const v = row / rows;
+              const topLeft = mapPoint(u, v);
+              const topRight = mapPoint((column + 1) / columns, v);
+              const bottomLeft = mapPoint(u, (row + 1) / rows);
+              ctx.setTransform(
+                (topRight.x - topLeft.x) / tileWidth,
+                (topRight.y - topLeft.y) / tileWidth,
+                (bottomLeft.x - topLeft.x) / tileHeight,
+                (bottomLeft.y - topLeft.y) / tileHeight,
+                topLeft.x,
+                topLeft.y,
+              );
+              ctx.drawImage(pages[page + 1], spine + column * tileWidth, row * tileHeight,
+                tileWidth, tileHeight, 0, 0, tileWidth + .6, tileHeight + .6);
+            }
+          }
+          ctx.restore();
+          const foldShadow = ctx.createLinearGradient(spine, 0, Math.min(spine + spine * eased, spine + 82), 0);
           foldShadow.addColorStop(0, '#342c2266');
           foldShadow.addColorStop(1, '#342c2200');
           ctx.fillStyle = foldShadow;
-          ctx.fillRect(spine, 0, Math.min(edge - spine, 82), canvas.height);
-          const paperEdge = ctx.createLinearGradient(edge - 24, 0, edge + 3, 0);
-          paperEdge.addColorStop(0, '#fff8e800');
-          paperEdge.addColorStop(.75, '#fff8e899');
-          paperEdge.addColorStop(1, '#6e554d99');
-          ctx.fillStyle = paperEdge;
-          ctx.fillRect(edge - 24, 0, 27, canvas.height);
+          ctx.fillRect(spine, 0, Math.min(spine * eased, 82), canvas.height);
+          ctx.beginPath();
+          for (let row = 0; row <= rows; row++) {
+            const point = mapPoint(1, row / rows);
+            if (!row) ctx.moveTo(point.x, point.y);
+            else ctx.lineTo(point.x, point.y);
+          }
+          ctx.strokeStyle = '#fff8e8b3';
+          ctx.lineWidth = 3;
+          ctx.stroke();
         }
       }
       if (elapsed < total) requestAnimationFrame(draw);
