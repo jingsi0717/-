@@ -194,6 +194,85 @@ function compress(file: File): Promise<string> {
   });
 }
 
+async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; extension: string }> {
+  if (!('MediaRecorder' in window) || !HTMLCanvasElement.prototype.captureStream) {
+    throw new Error('当前浏览器不支持离线视频生成，请在手机 Chrome 或 Safari 中打开。');
+  }
+  const mimeType = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+    .find(type => MediaRecorder.isTypeSupported(type));
+  if (!mimeType) throw new Error('当前浏览器不支持离线视频生成，请在手机 Chrome 或 Safari 中打开。');
+  const frames = await Promise.all(images.map(src => new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('旅记页面无法载入视频画布。'));
+    image.src = src;
+  })));
+  const canvas = document.createElement('canvas');
+  canvas.width = 960;
+  canvas.height = 720;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('无法创建视频画布。');
+  const drawPage = (image: HTMLImageElement) => {
+    ctx.fillStyle = '#e6d5b8';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const scale = Math.min(canvas.width / image.width, canvas.height / image.height);
+    const width = image.width * scale;
+    const height = image.height * scale;
+    ctx.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+  };
+  drawPage(frames[0]);
+  const stream = canvas.captureStream(24);
+  const chunks: BlobPart[] = [];
+  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
+  const result = new Promise<Blob>((resolve, reject) => {
+    recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+    recorder.onerror = () => reject(new Error('视频编码失败。'));
+    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+  });
+  recorder.start(1000);
+  const hold = 1400;
+  const turn = 650;
+  const total = frames.length * hold + (frames.length - 1) * turn;
+  const started = performance.now();
+  await new Promise<void>(resolve => {
+    const draw = (now: number) => {
+      const elapsed = Math.min(total, now - started);
+      let remainder = elapsed;
+      let page = 0;
+      while (page < frames.length - 1 && remainder >= hold + turn) {
+        remainder -= hold + turn;
+        page++;
+      }
+      drawPage(frames[page]);
+      if (page < frames.length - 1 && remainder > hold) {
+        const progress = Math.min(1, (remainder - hold) / turn);
+        const eased = progress * progress * (3 - 2 * progress);
+        const edge = Math.round(canvas.width * (1 - eased));
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(edge, 0, canvas.width - edge, canvas.height);
+        ctx.clip();
+        drawPage(frames[page + 1]);
+        ctx.restore();
+        const shadow = ctx.createLinearGradient(edge - 45, 0, edge + 26, 0);
+        shadow.addColorStop(0, '#342c2200');
+        shadow.addColorStop(.62, '#342c2266');
+        shadow.addColorStop(1, '#fff7e666');
+        ctx.fillStyle = shadow;
+        ctx.fillRect(edge - 45, 0, 71, canvas.height);
+      }
+      if (elapsed < total) requestAnimationFrame(draw);
+      else resolve();
+    };
+    requestAnimationFrame(draw);
+  });
+  recorder.stop();
+  stream.getTracks().forEach(track => track.stop());
+  const blob = await result;
+  if (!blob.size) throw new Error('视频文件为空，请重试。');
+  return { blob, extension: mimeType.includes('mp4') ? 'mp4' : 'webm' };
+}
+
 export default function Roadbook() {
   const [tab, setTab] = useState<Tab>('today'),
     [day, setDay] = useState(1),
@@ -204,7 +283,7 @@ export default function Roadbook() {
     [todoOpen, setTodoOpen] = useState(false),
     [todoFilter, setTodoFilter] = useState<'pre' | 'trip' | 'done'>('pre'),
     [draftStatus, setDraftStatus] = useState<NodeStatus>('pending'),
-    [imageMode, setImageMode] = useState<'day' | 'all' | null>(null),
+    [imageMode, setImageMode] = useState<'day' | 'video' | null>(null),
     [imageExport, setImageExport] = useState<{ busy: boolean; images: { day: number; src: string }[]; error?: string }>({ busy: false, images: [] }),
     [todoDraft, setTodoDraft] = useState({
       text: '',
@@ -332,8 +411,12 @@ export default function Roadbook() {
   const todoGroups = todoFilter === 'trip'
     ? days.map(item => ({ id: `day-${item.id}`, label: `D${item.id} · ${item.date} · ${item.title}`, items: visibleTodos.filter(todo => todo.day === item.id) })).filter(group => group.items.length)
     : [{ id: todoFilter, label: todoFilter === 'done' ? '已完成记录' : '出发前准备', items: visibleTodos }];
-  const exportJournalImages = (mode: 'day' | 'all') => {
+  const exportJournalImages = (mode: 'day' | 'video') => {
     if (imageExport.busy) return;
+    if (mode === 'video' && (!('MediaRecorder' in window) || !HTMLCanvasElement.prototype.captureStream)) {
+      setImageExport({ busy: false, images: [], error: '当前浏览器不支持离线视频生成，请在手机 Chrome 或 Safari 中打开。' });
+      return;
+    }
     setImageExport({ busy: true, images: [] });
     setImageMode(mode);
   };
@@ -378,21 +461,28 @@ export default function Roadbook() {
           await wait(80);
         }
         if (!cancelled) {
-          images.forEach((item, index) => setTimeout(() => {
-            const link = document.createElement('a');
-            link.href = item.src;
-            link.download = `2026青甘旅记-D${item.day}.jpg`;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-          }, index * 220));
+          let url = images[0]?.src;
+          let filename = `2026青甘旅记-D${images[0]?.day}.jpg`;
+          if (imageMode === 'video') {
+            const video = await makeJournalFlipVideo(images.map(item => item.src));
+            url = URL.createObjectURL(video.blob);
+            filename = `2026青甘七日旅记.${video.extension}`;
+          }
+          if (!url) throw new Error('没有可导出的旅记内容。');
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          if (imageMode === 'video') setTimeout(() => URL.revokeObjectURL(url!), 60_000);
           setImageExport({ busy: false, images: [] });
           setImageMode(null);
         }
       } catch (error) {
         console.error('Journal image export failed', error);
         if (!cancelled) {
-          setImageExport({ busy: false, images: [], error: '图片生成失败，请关闭其他页面后重试。' });
+          setImageExport({ busy: false, images: [], error: error instanceof Error ? error.message : '视频生成失败，请关闭其他页面后重试。' });
           setImageMode(null);
         }
       }
@@ -742,7 +832,7 @@ export default function Roadbook() {
           <h2 className="journal-preview-heading">当日手帐预览 <span>内容和照片会随记录更新</span></h2>
           <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} ds={state.dayState[day]} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
           <SystemJournal d={d} events={dayEvents} ds={ds} hasState={Boolean(state.dayState[day])} statuses={state.statuses} todos={state.todos} />
-          <div className="journal-actions"><button disabled={imageExport.busy} onClick={() => exportJournalImages('day')}><Download />{imageExport.busy ? '正在生成…' : '下载当天图片'}</button><button disabled={imageExport.busy} onClick={() => exportJournalImages('all')}><Download />{imageExport.busy ? '正在生成…' : '下载七日图片'}</button></div>
+          <div className="journal-actions"><button disabled={imageExport.busy} onClick={() => exportJournalImages('day')}><Download />{imageExport.busy ? '正在生成…' : '下载当天图片'}</button><button disabled={imageExport.busy} onClick={() => exportJournalImages('video')}><Download />{imageExport.busy ? '正在生成视频…' : '下载七日翻页视频'}</button></div>
           {imageExport.error && <p className="journal-export-message" role="alert">{imageExport.error}</p>}
           <article className="backup"><h3>本机数据备份</h3><p>旅记图片用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
         </section>
