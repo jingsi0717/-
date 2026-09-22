@@ -194,7 +194,7 @@ function compress(file: File): Promise<string> {
   });
 }
 
-async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; extension: string }> {
+async function makeJournalFlipVideo(images: string[], onProgress?: (progress: number) => void): Promise<{ blob: Blob; extension: string }> {
   if (!('MediaRecorder' in window) || !HTMLCanvasElement.prototype.captureStream) {
     throw new Error('当前浏览器不支持离线视频生成，请在手机 Chrome 或 Safari 中打开。');
   }
@@ -243,9 +243,15 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
   const turn = 1100;
   const total = frames.length * hold + (frames.length - 1) * turn;
   const started = performance.now();
+  let lastProgress = -1;
   await new Promise<void>(resolve => {
     const draw = (now: number) => {
       const elapsed = Math.min(total, now - started);
+      const progressStep = Math.floor(elapsed / total * 24);
+      if (progressStep !== lastProgress) {
+        lastProgress = progressStep;
+        onProgress?.(progressStep / 24);
+      }
       let remainder = elapsed;
       let page = 0;
       while (page < frames.length - 1 && remainder >= hold + turn) {
@@ -349,6 +355,7 @@ export default function Roadbook() {
     [draftStatus, setDraftStatus] = useState<NodeStatus>('pending'),
     [imageMode, setImageMode] = useState<'day' | 'video' | null>(null),
     [imageExport, setImageExport] = useState<{ busy: boolean; images: { day: number; src: string }[]; error?: string }>({ busy: false, images: [] }),
+    [videoProgress, setVideoProgress] = useState({ label: '正在准备旅记页面', percent: 0 }),
     [todoDraft, setTodoDraft] = useState({
       text: '',
       group: '行程',
@@ -482,6 +489,7 @@ export default function Roadbook() {
       return;
     }
     setImageExport({ busy: true, images: [] });
+    if (mode === 'video') setVideoProgress({ label: '正在准备旅记页面', percent: 0 });
     setImageMode(mode);
   };
   useEffect(() => {
@@ -498,7 +506,8 @@ export default function Roadbook() {
       const nodes = [...document.querySelectorAll<HTMLElement>('.image-export-document .journal-spread')];
       try {
         const images: { day: number; src: string }[] = [];
-        for (const node of nodes) {
+        for (const [index, node] of nodes.entries()) {
+          if (imageMode === 'video') setVideoProgress({ label: `正在生成第 ${index + 1} / ${nodes.length} 页`, percent: Math.round(index / nodes.length * 70) });
           await Promise.all([...node.querySelectorAll('img')].map(img => Promise.race([
             img.decode().catch(() => undefined),
             wait(1800),
@@ -522,15 +531,21 @@ export default function Roadbook() {
             src = await within(render(.72, .78), 12000, 'fallback render');
           }
           images.push({ day: Number(node.dataset.day), src });
+          if (imageMode === 'video') setVideoProgress({ label: `已完成 ${index + 1} / ${nodes.length} 页`, percent: Math.round((index + 1) / nodes.length * 70) });
           await wait(80);
         }
         if (!cancelled) {
           let url = images[0]?.src;
           let filename = `2026青甘旅记-D${images[0]?.day}.jpg`;
           if (imageMode === 'video') {
-            const video = await makeJournalFlipVideo(images.map(item => item.src));
+            setVideoProgress({ label: '正在制作翻页动画', percent: 70 });
+            await wait(0);
+            const video = await makeJournalFlipVideo(images.map(item => item.src), progress => {
+              setVideoProgress({ label: progress < 1 ? '正在制作翻页动画' : '正在完成视频编码', percent: 70 + Math.round(progress * 27) });
+            });
             url = URL.createObjectURL(video.blob);
             filename = `2026青甘七日旅记.${video.extension}`;
+            setVideoProgress({ label: '正在准备下载', percent: 99 });
           }
           if (!url) throw new Error('没有可导出的旅记内容。');
           const link = document.createElement('a');
@@ -629,6 +644,15 @@ export default function Roadbook() {
         </span>
       </header>
       {imageMode && <section className="image-export-document" aria-hidden="true">{(imageMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} ds={state.dayState[item.id]} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
+      {imageMode === 'video' && imageExport.busy && <div className="video-export-overlay" role="status" aria-live="polite">
+        <div className="video-export-card">
+          <span className="video-export-spinner" aria-hidden="true" />
+          <strong>正在生成七日翻页视频</strong>
+          <p>{videoProgress.label}</p>
+          <div className="video-export-track" role="progressbar" aria-label="视频生成进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={videoProgress.percent}><span style={{ width: `${videoProgress.percent}%` }} /></div>
+          <small>{videoProgress.percent}% · 请保持页面打开</small>
+        </div>
+      </div>}
       {tab === 'today' && (
         <section className="view">
           {state.finished && <div className="trip-finished"><strong>旅程已结束</strong><span>可以在旅记中回看和导出七天记录。</span><button onClick={() => setTab('journal')}>查看旅记</button></div>}
