@@ -257,22 +257,20 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
         const progress = Math.min(1, (remainder - hold) / turn);
         const eased = progress * progress * (3 - 2 * progress);
         const spine = canvas.width / 2;
-        const curl = Math.sin(Math.PI * eased);
-        const bend = curl * eased;
+        const turningFront = eased < .5;
+        const spread = turningFront ? 1 - eased * 2 : eased * 2 - 1;
+        const direction = turningFront ? 1 : -1;
+        const curl = Math.sin(Math.PI * spread);
+        const bend = curl * spread;
         const mapPoint = (u: number, v: number) => ({
-          x: spine + spine * eased * u + bend * (14 * Math.sin(Math.PI * u) + 18 * u * u * Math.sin(Math.PI * v)),
+          x: spine + direction * (spine * spread * u + bend * (14 * Math.sin(Math.PI * u) + 18 * u * u * Math.sin(Math.PI * v))),
           y: canvas.height * v - curl * 14 * Math.sin(Math.PI * u) * Math.sin(Math.PI * v),
         });
-        // Reveal the page beneath while the turning sheet grows out of the spine.
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, 0, spine, canvas.height);
-        ctx.clip();
-        ctx.globalAlpha = eased;
-        ctx.drawImage(pages[page + 1], 0, 0);
-        ctx.restore();
-        if (eased > 0) {
-          // Warp the page artwork as a mesh, so text and photos bend with the paper.
+        // The right page folds toward the spine, then its reverse opens over the left page.
+        ctx.drawImage(pages[page], 0, 0, spine, canvas.height, 0, 0, spine, canvas.height);
+        ctx.drawImage(pages[page + 1], spine, 0, spine, canvas.height, spine, 0, spine, canvas.height);
+        if (spread > 0) {
+          // Mesh-warp the artwork on each face so text and photos follow the curved sheet.
           const columns = 24;
           const rows = 12;
           const tileWidth = spine / columns;
@@ -291,9 +289,11 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
             for (let column = 0; column < columns; column++) {
               const u = column / columns;
               const v = row / rows;
-              const topLeft = mapPoint(u, v);
-              const topRight = mapPoint((column + 1) / columns, v);
-              const bottomLeft = mapPoint(u, (row + 1) / rows);
+              const leftU = turningFront ? u : (column + 1) / columns;
+              const rightU = turningFront ? (column + 1) / columns : u;
+              const topLeft = mapPoint(leftU, v);
+              const topRight = mapPoint(rightU, v);
+              const bottomLeft = mapPoint(leftU, (row + 1) / rows);
               ctx.setTransform(
                 (topRight.x - topLeft.x) / tileWidth,
                 (topRight.y - topLeft.y) / tileWidth,
@@ -302,16 +302,18 @@ async function makeJournalFlipVideo(images: string[]): Promise<{ blob: Blob; ext
                 topLeft.x,
                 topLeft.y,
               );
-              ctx.drawImage(pages[page + 1], spine + column * tileWidth, row * tileHeight,
+              const sourceX = turningFront ? spine + column * tileWidth : spine - (column + 1) * tileWidth;
+              ctx.drawImage(pages[turningFront ? page : page + 1], sourceX, row * tileHeight,
                 tileWidth, tileHeight, 0, 0, tileWidth + .6, tileHeight + .6);
             }
           }
           ctx.restore();
-          const foldShadow = ctx.createLinearGradient(spine, 0, Math.min(spine + spine * eased, spine + 82), 0);
+          const shadowEnd = spine + direction * Math.min(spine * spread, 82);
+          const foldShadow = ctx.createLinearGradient(spine, 0, shadowEnd, 0);
           foldShadow.addColorStop(0, '#342c2266');
           foldShadow.addColorStop(1, '#342c2200');
           ctx.fillStyle = foldShadow;
-          ctx.fillRect(spine, 0, Math.min(spine * eased, 82), canvas.height);
+          ctx.fillRect(Math.min(spine, shadowEnd), 0, Math.abs(shadowEnd - spine), canvas.height);
           ctx.beginPath();
           for (let row = 0; row <= rows; row++) {
             const point = mapPoint(1, row / rows);
