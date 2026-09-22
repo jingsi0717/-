@@ -880,14 +880,6 @@ export default function Roadbook() {
               </label>
             ))}</section>)}
           </div>
-          {todoOpen && (
-            <TodoSheet
-              draft={todoDraft}
-              setDraft={setTodoDraft}
-              save={saveTodo}
-              close={() => setTodoOpen(false)}
-            />
-          )}
         </section>
       )}
       {tab === 'journal' && (
@@ -947,6 +939,14 @@ export default function Roadbook() {
           </button>
         ))}
       </nav>
+      {todoOpen && (
+        <TodoSheet
+          draft={todoDraft}
+          setDraft={setTodoDraft}
+          save={saveTodo}
+          close={() => setTodoOpen(false)}
+        />
+      )}
     </main>
   );
 }
@@ -1358,10 +1358,10 @@ function TodoSheet({
             <X />
           </button>
         </header>
+        <div className="todo-sheet-body">
         <label>
           标题
           <input
-            autoFocus
             required
             value={draft.text}
             onChange={(e) => setDraft({ ...draft, text: e.target.value })}
@@ -1411,6 +1411,7 @@ function TodoSheet({
             onChange={(e) => setDraft({ ...draft, note: e.target.value })}
           />
         </label>
+        </div>
         <footer>
           <button type="button" onClick={close}>取消</button>
           <button type="submit" className="save" disabled={!draft.text.trim()}>

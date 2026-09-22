@@ -14,7 +14,13 @@ input,select,textarea{min-width:0;max-width:100%}
   .bottom-nav{position:fixed;inset:auto 0 0;left:0;right:0;bottom:0;width:100%;max-width:none;margin:0;transform:none;border-radius:0;z-index:30;padding:9px 12px calc(10px + env(safe-area-inset-bottom,0px))}
   .bottom-nav button{min-height:49px;touch-action:manipulation}
 }
-.todo-sheet{width:min(760px,100vw);max-height:90dvh;padding-bottom:max(20px,env(safe-area-inset-bottom))}
+.sheet-backdrop{z-index:100;min-height:100dvh}
+.todo-sheet{display:flex;flex-direction:column;width:min(760px,100vw);max-height:min(90dvh,720px);overflow:hidden;padding:20px 20px max(16px,env(safe-area-inset-bottom))}
+.todo-sheet>header,.todo-sheet>footer{flex:none}
+.todo-sheet-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 2px 8px;margin:0 -2px}
+.todo-sheet-body>label{display:flex;flex-direction:column;gap:6px;margin-top:13px;font-size:12px}
+.todo-sheet>footer{display:flex;gap:9px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line);background:#fffdf7}
+.todo-sheet>footer button{min-height:48px}
 .state-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 .form-pair{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(min-width:761px){.app{min-height:calc(100dvh - 56px)}.bottom-nav{width:min(718px,calc(100vw - 56px))}}
