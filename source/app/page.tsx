@@ -333,6 +333,7 @@ export default function Roadbook() {
     ? days.map(item => ({ id: `day-${item.id}`, label: `D${item.id} · ${item.date} · ${item.title}`, items: visibleTodos.filter(todo => todo.day === item.id) })).filter(group => group.items.length)
     : [{ id: todoFilter, label: todoFilter === 'done' ? '已完成记录' : '出发前准备', items: visibleTodos }];
   const exportJournalImages = (mode: 'day' | 'all') => {
+    if (imageExport.busy) return;
     setImageExport({ busy: true, images: [] });
     setImageMode(mode);
   };
@@ -355,9 +356,14 @@ export default function Roadbook() {
             img.decode().catch(() => undefined),
             wait(1800),
           ])));
+          const width = Math.ceil(Math.max(node.scrollWidth, node.offsetWidth));
+          const height = Math.ceil(Math.max(node.scrollHeight, node.offsetHeight));
           const render = (pixelRatio: number, quality: number) => toJpeg(node, {
             quality,
             pixelRatio,
+            width,
+            height,
+            style: { width: `${width}px`, height: `${height}px`, overflow: 'visible' },
             backgroundColor: '#f1e3ca',
             cacheBust: false,
           });
@@ -371,10 +377,24 @@ export default function Roadbook() {
           images.push({ day: Number(node.dataset.day), src });
           await wait(80);
         }
-        if (!cancelled) setImageExport({ busy: false, images });
+        if (!cancelled) {
+          images.forEach((item, index) => setTimeout(() => {
+            const link = document.createElement('a');
+            link.href = item.src;
+            link.download = `2026青甘旅记-D${item.day}.jpg`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+          }, index * 220));
+          setImageExport({ busy: false, images: [] });
+          setImageMode(null);
+        }
       } catch (error) {
         console.error('Journal image export failed', error);
-        if (!cancelled) setImageExport({ busy: false, images: [], error: '图片生成失败。请关闭其他页面、重新打开旅记后再试；仍失败时请在手机浏览器中打开。' });
+        if (!cancelled) {
+          setImageExport({ busy: false, images: [], error: '图片生成失败，请关闭其他页面后重试。' });
+          setImageMode(null);
+        }
       }
     };
     capture();
@@ -455,7 +475,6 @@ export default function Roadbook() {
         </span>
       </header>
       {imageMode && <section className="image-export-document" aria-hidden="true">{(imageMode === 'day' ? [d] : days).map(item => <JournalSpread key={item.id} d={item} journal={state.journal[item.id] || { photos: [] }} ds={state.dayState[item.id]} events={(state.events || []).filter(x => x.day === item.id)} statuses={state.statuses} todos={state.todos} />)}</section>}
-      {(imageExport.busy || imageExport.images.length > 0 || imageExport.error) && <ImageExportSheet value={imageExport} close={() => { setImageExport({ busy: false, images: [] }); setImageMode(null); }} />}
       {tab === 'today' && (
         <section className="view">
           {state.finished && <div className="trip-finished"><strong>旅程已结束</strong><span>可以在旅记中回看和导出七天记录。</span><button onClick={() => setTab('journal')}>查看旅记</button></div>}
@@ -723,7 +742,8 @@ export default function Roadbook() {
           <h2 className="journal-preview-heading">当日手帐预览 <span>内容和照片会随记录更新</span></h2>
           <div className="journal-preview"><JournalSpread d={d} journal={state.journal[day] || { photos: [] }} ds={state.dayState[day]} events={dayEvents} statuses={state.statuses} todos={state.todos} /></div>
           <SystemJournal d={d} events={dayEvents} ds={ds} hasState={Boolean(state.dayState[day])} statuses={state.statuses} todos={state.todos} />
-          <div className="journal-actions"><button onClick={() => exportJournalImages('day')}><Download />生成当天图片</button><button onClick={() => exportJournalImages('all')}><Download />生成七日图片</button></div>
+          <div className="journal-actions"><button disabled={imageExport.busy} onClick={() => exportJournalImages('day')}><Download />{imageExport.busy ? '正在生成…' : '下载当天图片'}</button><button disabled={imageExport.busy} onClick={() => exportJournalImages('all')}><Download />{imageExport.busy ? '正在生成…' : '下载七日图片'}</button></div>
+          {imageExport.error && <p className="journal-export-message" role="alert">{imageExport.error}</p>}
           <article className="backup"><h3>本机数据备份</h3><p>旅记图片用于阅读留存；JSON 用于换机恢复，包含照片。清除微信数据前请先备份。</p><div><button onClick={exportData}><Download />导出 JSON 备份</button><button onClick={() => importRef.current?.click()}><FileUp />导入 JSON 备份</button><input ref={importRef} hidden type="file" accept=".json" onChange={importData} /></div></article>
         </section>
       )}
@@ -1222,24 +1242,6 @@ function TodoSheet({
       </form>
     </div>
   );
-}
-function ImageExportSheet({ value, close }: { value: { busy: boolean; images: { day: number; src: string }[]; error?: string }; close: () => void }) {
-  const isWechat = typeof navigator !== 'undefined' && /MicroMessenger/i.test(navigator.userAgent);
-  const download = (item: { day: number; src: string }) => {
-    const link = document.createElement('a');
-    link.href = item.src;
-    link.download = `2026青甘旅记-D${item.day}.jpg`;
-    link.click();
-  };
-  return <div className="sheet-backdrop export-backdrop" onClick={close}>
-    <section className="image-export-sheet" role="dialog" aria-modal="true" aria-labelledby="image-export-title" onClick={e => e.stopPropagation()}>
-      <header><div><h2 id="image-export-title">旅记图片</h2><p>{isWechat ? '微信内请长按下方图片，选择“保存图片”。' : '图片已生成，可预览或保存到设备。'}</p></div><button aria-label="关闭" onClick={close}><X /></button></header>
-      {value.busy && <div className="export-loading"><span/>正在生成高清图片…</div>}
-      {value.error && <p className="export-error">{value.error}</p>}
-      {value.images.length > 0 && <div className="export-images">{value.images.map(item => <figure key={item.day}><img src={item.src} alt={`D${item.day}旅记导出图片`} /><figcaption><span>D{item.day} · {days[item.day - 1].date}</span>{!isWechat && <button onClick={() => download(item)}><Download />保存图片</button>}</figcaption></figure>)}</div>}
-      {value.images.length > 1 && !isWechat && <button className="save-all-images" onClick={() => value.images.forEach((item, i) => setTimeout(() => download(item), i * 180))}><Download />依次保存全部图片</button>}
-    </section>
-  </div>;
 }
 function JournalPage({
   d,
